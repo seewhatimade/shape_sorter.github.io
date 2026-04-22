@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Shape Sorter!</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: linear-gradient(to bottom, #ffe8d6, #f5cba7, #f0b27a);
+    font-family: 'Comic Sans MS', 'Chalkboard SE', cursive;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  layoutBoard();
+}
+
+// --- Audio ---
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function playSnap() {
+  const t = audioCtx.currentTime;
+  [523, 659, 784].forEach((f, i) => {
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0, t + i * 0.08);
+    g.gain.linearRampToValueAtTime(0.18, t + i * 0.08 + 0.02);
+    g.gain.linearRampToValueAtTime(0, t + i * 0.08 + 0.25);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(t + i * 0.08); o.stop(t + i * 0.08 + 0.25);
+  });
+}
+
+function playWrong() {
+  const t = audioCtx.currentTime;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = 'triangle'; o.frequency.value = 200;
+  o.frequency.linearRampToValueAtTime(140, t + 0.15);
+  g.gain.setValueAtTime(0.1, t);
+  g.gain.linearRampToValueAtTime(0, t + 0.15);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(t); o.stop(t + 0.15);
+}
+
+function playPickup() {
+  const t = audioCtx.currentTime;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = 'sine'; o.frequency.value = 500;
+  o.frequency.linearRampToValueAtTime(700, t + 0.08);
+  g.gain.setValueAtTime(0.12, t);
+  g.gain.linearRampToValueAtTime(0, t + 0.1);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(t); o.stop(t + 0.1);
+}
+
+function playRoundComplete() {
+  const t = audioCtx.currentTime;
+  [523, 587, 659, 784, 880, 1047].forEach((f, i) => {
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0, t + i * 0.1);
+    g.gain.linearRampToValueAtTime(0.15, t + i * 0.1 + 0.03);
+    g.gain.linearRampToValueAtTime(0, t + i * 0.1 + 0.4);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(t + i * 0.1); o.stop(t + i * 0.1 + 0.4);
+  });
+}
+
+// --- Shape definitions ---
+const SHAPE_DEFS = [
+  { type: 'circle',   label: 'Circle',   color: '#ff5555', holeColor: '#cc3333' },
+  { type: 'square',   label: 'Square',   color: '#5599ff', holeColor: '#3366cc' },
+  { type: 'triangle', label: 'Triangle', color: '#55cc55', holeColor: '#339933' },
+  { type: 'heart',    label: 'Heart',    color: '#ff69b4', holeColor: '#cc4488' },
+  { type: 'star',     label: 'Star',     color: '#ffd700', holeColor: '#ccaa00' },
+  { type: 'diamond',  label: 'Diamond',  color: '#00ced1', holeColor: '#009a9c' },
+  { type: 'pentagon', label: 'Pentagon', color: '#ff8c00', holeColor: '#cc6600' },
+  { type: 'cross',    label: 'Cross',    color: '#9370db', holeColor: '#6a4db5' },
+  { type: 'oval',     label: 'Oval',     color: '#40e0d0', holeColor: '#2ab0a0' },
+  { type: 'crescent', label: 'Moon',     color: '#fffacd', holeColor: '#d4c87a' },
+];
+
+// --- Draw shape path (centered at 0,0 with given radius) ---
+function shapePath(type, r) {
+  ctx.beginPath();
+  switch (type) {
+    case 'circle':
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      break;
+    case 'square':
+      ctx.roundRect(-r, -r, r * 2, r * 2, r * 0.12);
+      break;
+    case 'triangle':
+      ctx.moveTo(0, -r);
+      ctx.lineTo(r * 0.95, r * 0.7);
+      ctx.lineTo(-r * 0.95, r * 0.7);
+      ctx.closePath();
+      break;
+    case 'heart': {
+      const s = r / 22;
+      ctx.moveTo(0, 8 * s);
+      ctx.bezierCurveTo(-2 * s, 4 * s, -22 * s, -6 * s, -12 * s, -16 * s);
+      ctx.bezierCurveTo(-6 * s, -22 * s, 0, -18 * s, 0, -12 * s);
+      ctx.bezierCurveTo(0, -18 * s, 6 * s, -22 * s, 12 * s, -16 * s);
+      ctx.bezierCurveTo(22 * s, -6 * s, 2 * s, 4 * s, 0, 8 * s);
+      ctx.closePath();
+      break;
+    }
+    case 'star':
+      for (let i = 0; i < 5; i++) {
+        const a = (i * 4 * Math.PI / 5) - Math.PI / 2;
+        const method = i === 0 ? 'moveTo' : 'lineTo';
+        ctx[method](Math.cos(a) * r, Math.sin(a) * r);
+        const ia = a + 2 * Math.PI / 5;
+        ctx.lineTo(Math.cos(ia) * r * 0.42, Math.sin(ia) * r * 0.42);
+      }
+      ctx.closePath();
+      break;
+    case 'diamond':
+      ctx.moveTo(0, -r);
+      ctx.lineTo(r * 0.6, 0);
+      ctx.lineTo(0, r);
+      ctx.lineTo(-r * 0.6, 0);
+      ctx.closePath();
+      break;
+    case 'pentagon':
+      for (let i = 0; i < 5; i++) {
+        const a = (i * 2 * Math.PI / 5) - Math.PI / 2;
+        const method = i === 0 ? 'moveTo' : 'lineTo';
+        ctx[method](Math.cos(a) * r, Math.sin(a) * r);
+      }
+      ctx.closePath();
+      break;
+    case 'cross': {
+      const w = r * 0.38;
+      ctx.moveTo(-w, -r); ctx.lineTo(w, -r); ctx.lineTo(w, -w);
+      ctx.lineTo(r, -w); ctx.lineTo(r, w); ctx.lineTo(w, w);
+      ctx.lineTo(w, r); ctx.lineTo(-w, r); ctx.lineTo(-w, w);
+      ctx.lineTo(-r, w); ctx.lineTo(-r, -w); ctx.lineTo(-w, -w);
+      ctx.closePath();
+      break;
+    }
+    case 'oval':
+      ctx.ellipse(0, 0, r, r * 0.6, 0, 0, Math.PI * 2);
+      break;
+    case 'crescent':
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      break;
+  }
+}
+
+function drawShapeFilled(type, x, y, r, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  shapePath(type, r);
+  ctx.fillStyle = color;
+  ctx.fill();
+
+  // Highlight
+  shapePath(type, r);
+  ctx.clip();
+  ctx.beginPath();
+  ctx.ellipse(-r * 0.2, -r * 0.3, r * 0.6, r * 0.4, -0.3, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.fill();
+
+  ctx.restore();
+
+  // Outline
+  ctx.save();
+  ctx.translate(x, y);
+  shapePath(type, r);
+  ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+
+  // Crescent: cut out
+  if (type === 'crescent') {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    ctx.arc(r * 0.35, -r * 0.15, r * 0.72, 0, Math.PI * 2);
+    ctx.fillStyle = '#f0b27a'; // match background roughly
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+}
+
+function drawHole(type, x, y, r, holeColor) {
+  ctx.save();
+  ctx.translate(x, y);
+
+  // Shadow behind hole
+  ctx.shadowColor = 'rgba(0,0,0,0.3)';
+  ctx.shadowBlur = 8;
+  ctx.shadowOffsetY = 3;
+
+  shapePath(type, r + 4);
+  ctx.fillStyle = holeColor;
+  ctx.fill();
+
+  ctx.shadowColor = 'transparent';
+
+  // Inner dark
+  shapePath(type, r);
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fill();
+
+  // Inner bevel
+  shapePath(type, r - 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.fill();
+
+  // Crescent hole cut
+  if (type === 'crescent') {
+    ctx.beginPath();
+    ctx.arc(r * 0.35, -r * 0.15, r * 0.72, 0, Math.PI * 2);
+    ctx.fillStyle = holeColor;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc((r + 4) * 0.35, -(r + 4) * 0.15, (r + 4) * 0.72, 0, Math.PI * 2);
+    ctx.fillStyle = holeColor;
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// --- Game state ---
+let holes = [];
+let shapes = [];
+// Selection & animation state is managed by selected/flying variables
+let score = 0;
+let round = 1;
+let matchedCount = 0;
+let totalInRound = 0;
+let particles = [];
+let confettiPieces = [];
+let celebrating = false;
+let celebrateTimer = 0;
+let shapeSize = 30;
+let hintTimer = 0;
+
+// --- Layout ---
+function layoutBoard() {
+  const count = Math.min(4 + Math.floor((round - 1) / 2), SHAPE_DEFS.length);
+  totalInRound = count;
+  matchedCount = 0;
+
+  // Pick shapes for this round
+  const shuffled = [...SHAPE_DEFS].sort(() => Math.random() - 0.5);
+  const picked = shuffled.slice(0, count);
+
+  shapeSize = Math.min(40, Math.min(W, H) / (count + 2) * 0.6);
+
+  // Board (holes) along the top area
+  const boardY = H * 0.22;
+  const boardW = W * 0.85;
+  const boardLeft = (W - boardW) / 2;
+
+  // Wooden board background dimensions
+  const boardPad = shapeSize * 0.8;
+
+  holes = picked.map((def, i) => {
+    const spacing = boardW / count;
+    return {
+      type: def.type,
+      label: def.label,
+      holeColor: def.holeColor,
+      color: def.color,
+      x: boardLeft + spacing * (i + 0.5),
+      y: boardY,
+      r: shapeSize,
+      matched: false,
+      glow: 0,
+    };
+  });
+
+  // Shapes scattered in the lower portion
+  const shapeY = H * 0.65;
+  const shapeArea = { left: W * 0.1, right: W * 0.9, top: H * 0.5, bottom: H * 0.85 };
+
+  // Shuffle order for placement
+  const placementOrder = [...picked].sort(() => Math.random() - 0.5);
+  shapes = placementOrder.map((def, i) => {
+    // Spread them out
+    const cols = Math.min(count, 4);
+    const rows = Math.ceil(count / cols);
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const cellW = (shapeArea.right - shapeArea.left) / cols;
+    const cellH = (shapeArea.bottom - shapeArea.top) / rows;
+
+    return {
+      type: def.type,
+      label: def.label,
+      color: def.color,
+      x: shapeArea.left + cellW * (col + 0.5) + (Math.random() - 0.5) * cellW * 0.3,
+      y: shapeArea.top + cellH * (row + 0.5) + (Math.random() - 0.5) * cellH * 0.2,
+      homeX: 0, homeY: 0, // set below
+      r: shapeSize,
+      matched: false,
+      rotation: (Math.random() - 0.5) * 0.4,
+      wobble: Math.random() * Math.PI * 2,
+      scale: 1,
+      popScale: 0, // for snap animation
+    };
+  });
+
+  // Store home positions
+  shapes.forEach(s => { s.homeX = s.x; s.homeY = s.y; });
+
+  hintTimer = 0;
+  selected = null;
+  flying = null;
+}
+
+// --- Particles ---
+class StarParticle {
+  constructor(x, y, color) {
+    this.x = x; this.y = y;
+    const a = Math.random() * Math.PI * 2;
+    const sp = 2 + Math.random() * 5;
+    this.vx = Math.cos(a) * sp;
+    this.vy = Math.sin(a) * sp - 2;
+    this.r = 3 + Math.random() * 4;
+    this.color = color;
+    this.life = 1;
+    this.decay = 0.02 + Math.random() * 0.02;
+    this.rot = Math.random() * Math.PI * 2;
+    this.rotSpeed = (Math.random() - 0.5) * 0.2;
+  }
+  update() {
+    this.x += this.vx; this.y += this.vy;
+    this.vy += 0.12; this.life -= this.decay;
+    this.rot += this.rotSpeed;
+  }
+  draw() {
+    ctx.save();
+    ctx.globalAlpha = this.life;
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.rot);
+    const r = this.r * this.life;
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const a = (i * 4 * Math.PI / 5) - Math.PI / 2;
+      ctx[i === 0 ? 'moveTo' : 'lineTo'](Math.cos(a) * r, Math.sin(a) * r);
+      const ia = a + 2 * Math.PI / 5;
+      ctx.lineTo(Math.cos(ia) * r * 0.4, Math.sin(ia) * r * 0.4);
+    }
+    ctx.closePath();
+    ctx.fillStyle = this.color;
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function spawnConfetti(cx, cy) {
+  for (let i = 0; i < 50; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 4 + Math.random() * 10;
+    confettiPieces.push({
+      x: cx, y: cy,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp - 5,
+      r: 3 + Math.random() * 5,
+      color: `hsl(${Math.random() * 360}, 85%, 60%)`,
+      rot: Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 0.3,
+      life: 1,
+    });
+  }
+}
+
+// --- Drawing ---
+function drawWoodenBoard() {
+  if (holes.length === 0) return;
+
+  const pad = shapeSize * 1.2;
+  const minX = Math.min(...holes.map(h => h.x)) - pad;
+  const maxX = Math.max(...holes.map(h => h.x)) + pad;
+  const topY = holes[0].y - pad;
+  const botY = holes[0].y + pad;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(minX, topY, maxX - minX, botY - topY, 16);
+
+  // Wood gradient
+  const grad = ctx.createLinearGradient(minX, topY, minX, botY);
+  grad.addColorStop(0, '#deb887');
+  grad.addColorStop(0.3, '#d2a56e');
+  grad.addColorStop(0.7, '#c49456');
+  grad.addColorStop(1, '#b8843e');
+  ctx.fillStyle = grad;
+  ctx.shadowColor = 'rgba(0,0,0,0.3)';
+  ctx.shadowBlur = 12;
+  ctx.shadowOffsetY = 4;
+  ctx.fill();
+
+  ctx.shadowColor = 'transparent';
+
+  // Wood grain lines
+  ctx.strokeStyle = 'rgba(0,0,0,0.06)';
+  ctx.lineWidth = 1;
+  for (let y = topY + 8; y < botY; y += 6) {
+    ctx.beginPath();
+    ctx.moveTo(minX + 10, y + Math.sin(y * 0.1) * 3);
+    for (let x = minX + 20; x < maxX; x += 20) {
+      ctx.lineTo(x, y + Math.sin(x * 0.05 + y * 0.1) * 3);
+    }
+    ctx.stroke();
+  }
+
+  // Board border
+  ctx.beginPath();
+  ctx.roundRect(minX, topY, maxX - minX, botY - topY, 16);
+  ctx.strokeStyle = '#8B6914';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawBackground() {
+  // Warm gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#ffe8d6');
+  grad.addColorStop(0.5, '#f5cba7');
+  grad.addColorStop(1, '#f0b27a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Playful dots pattern
+  ctx.globalAlpha = 0.06;
+  for (let x = 20; x < W; x += 40) {
+    for (let y = 20; y < H; y += 40) {
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#8B4513';
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHUD() {
+  ctx.save();
+  // Title
+  ctx.font = "bold 28px 'Comic Sans MS', cursive";
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#6B3410';
+  ctx.shadowColor = 'rgba(255,255,255,0.5)';
+  ctx.shadowBlur = 4;
+  ctx.fillText('Shape Sorter!', 16, 34);
+
+  // Score & round
+  ctx.textAlign = 'right';
+  ctx.font = "bold 24px 'Comic Sans MS', cursive";
+  ctx.fillStyle = '#FFD700';
+  ctx.shadowColor = 'rgba(0,0,0,0.3)';
+  ctx.fillText('\u{2B50} ' + score, W - 16, 30);
+  ctx.font = "18px 'Comic Sans MS', cursive";
+  ctx.fillStyle = '#8B6914';
+  ctx.fillText('Round ' + round, W - 16, 54);
+
+  // Progress dots
+  ctx.textAlign = 'center';
+  const dotY = H * 0.42;
+  const dotSpacing = 20;
+  const startX = W / 2 - (totalInRound - 1) * dotSpacing / 2;
+  for (let i = 0; i < totalInRound; i++) {
+    ctx.beginPath();
+    ctx.arc(startX + i * dotSpacing, dotY, 6, 0, Math.PI * 2);
+    ctx.fillStyle = i < matchedCount ? '#4CAF50' : '#ccc';
+    ctx.fill();
+    ctx.strokeStyle = i < matchedCount ? '#388E3C' : '#aaa';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    if (i < matchedCount) {
+      ctx.beginPath();
+      ctx.moveTo(startX + i * dotSpacing - 3, dotY);
+      ctx.lineTo(startX + i * dotSpacing - 1, dotY + 3);
+      ctx.lineTo(startX + i * dotSpacing + 4, dotY - 3);
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+// --- Hint: labels under shapes and holes after a delay ---
+function drawLabels() {
+  // Always show labels on holes
+  ctx.save();
+  ctx.font = `bold ${Math.max(12, shapeSize * 0.38)}px 'Comic Sans MS', cursive`;
+  ctx.textAlign = 'center';
+  for (const h of holes) {
+    if (h.matched) continue;
+    ctx.fillStyle = 'rgba(100,50,20,0.6)';
+    ctx.fillText(h.label, h.x, h.y + h.r + shapeSize * 0.55);
+  }
+  ctx.restore();
+}
+
+// --- Click to pick up, move with cursor, auto-drop on hole ---
+let selected = null;
+let flying = null;
+
+function getPos(e) {
+  if (e.touches) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  return { x: e.clientX, y: e.clientY };
+}
+
+function hitTestShape(px, py, shape) {
+  const dx = px - shape.x;
+  const dy = py - shape.y;
+  return dx * dx + dy * dy < (shape.r + 14) * (shape.r + 14);
+}
+
+function hitTestHole(px, py, hole) {
+  const dx = px - hole.x;
+  const dy = py - hole.y;
+  return dx * dx + dy * dy < (hole.r + 14) * (hole.r + 14);
+}
+
+function tryMatchHole(s) {
+  for (const h of holes) {
+    if (h.matched) continue;
+    if (hitTestHole(s.x, s.y, h)) {
+      if (s.type === h.type) {
+        // Correct — snap into hole
+        selected = null;
+        s.matched = true;
+        h.matched = true;
+        s.x = h.x;
+        s.y = h.y;
+        s.rotation = 0;
+        s.scale = 1;
+        s.popScale = 1.4;
+        matchedCount++;
+        score += 10;
+        h.glow = 1;
+        playSnap();
+
+        for (let i = 0; i < 15; i++) {
+          particles.push(new StarParticle(h.x, h.y, s.color));
+        }
+
+        if (matchedCount >= totalInRound) {
+          celebrating = true;
+          celebrateTimer = 0;
+          playRoundComplete();
+          spawnConfetti(W / 2, H / 2);
+        }
+        return true;
+      } else {
+        // Wrong hole — bounce back
+        selected = null;
+        s.scale = 1;
+        s.x = s.homeX;
+        s.y = s.homeY;
+        cooldown = s;
+        cooldownTimer = 30; // ignore this shape for ~0.5s
+        playWrong();
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+let cooldown = null; // shape on cooldown after wrong drop (briefly ignore it)
+let cooldownTimer = 0;
+
+function onMove(e) {
+  e.preventDefault();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  if (celebrating) return;
+
+  const pos = getPos(e);
+
+  // If holding a shape, move it and check holes
+  if (selected) {
+    selected.x = pos.x;
+    selected.y = pos.y;
+    tryMatchHole(selected);
+    return;
+  }
+
+  // Not holding anything — try to pick up a shape by hovering over it
+  for (let i = shapes.length - 1; i >= 0; i--) {
+    const s = shapes[i];
+    if (s.matched) continue;
+    if (s === cooldown) continue; // skip shape on cooldown
+    if (hitTestShape(pos.x, pos.y, s)) {
+      selected = s;
+      s.scale = 1.2;
+      s.x = pos.x;
+      s.y = pos.y;
+      // Move to top of draw order
+      shapes.splice(i, 1);
+      shapes.push(s);
+      playPickup();
+      return;
+    }
+  }
+}
+
+// Resume audio on first touch
+canvas.addEventListener('mousedown', () => { if (audioCtx.state === 'suspended') audioCtx.resume(); });
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  // Treat first touch as a move to pick up
+  onMove(e);
+}, { passive: false });
+canvas.addEventListener('mousemove', onMove);
+canvas.addEventListener('touchmove', onMove, { passive: false });
+
+// --- Animation ---
+function update() {
+  // Cooldown timer
+  if (cooldownTimer > 0) {
+    cooldownTimer--;
+    if (cooldownTimer <= 0) cooldown = null;
+  }
+
+  // Wobble unmatched shapes
+  for (const s of shapes) {
+    if (s.matched) {
+      if (s.popScale > 1) s.popScale += (1 - s.popScale) * 0.1;
+    } else {
+      s.wobble += 0.02;
+    }
+  }
+
+  // Hole glow fade
+  for (const h of holes) {
+    if (h.glow > 0) h.glow *= 0.96;
+  }
+
+  // Particles
+  particles.forEach(p => p.update());
+  particles = particles.filter(p => p.life > 0);
+
+  // Confetti
+  for (const c of confettiPieces) {
+    c.x += c.vx; c.y += c.vy;
+    c.vy += 0.15; c.vx *= 0.99;
+    c.rot += c.rotSpeed;
+    c.life -= 0.008;
+  }
+  confettiPieces = confettiPieces.filter(c => c.life > 0);
+
+  // Celebrate timer
+  if (celebrating) {
+    celebrateTimer++;
+    if (celebrateTimer > 150) {
+      celebrating = false;
+      round++;
+      layoutBoard();
+    }
+  }
+
+  hintTimer++;
+}
+
+function draw() {
+  drawBackground();
+  drawWoodenBoard();
+
+  // Holes
+  for (const h of holes) {
+    // Glow effect
+    if (h.glow > 0.01) {
+      ctx.save();
+      ctx.globalAlpha = h.glow * 0.5;
+      ctx.shadowColor = h.color;
+      ctx.shadowBlur = 30;
+      ctx.translate(h.x, h.y);
+      shapePath(h.type, h.r + 10);
+      ctx.fillStyle = h.color;
+      ctx.fill();
+      ctx.restore();
+    }
+    drawHole(h.type, h.x, h.y, h.r, h.holeColor);
+  }
+
+  drawLabels();
+
+  // Shapes
+  for (const s of shapes) {
+    if (s.matched && !celebrating) {
+      // Draw matched shape in hole (slightly visible)
+      ctx.save();
+      ctx.globalAlpha = 0.4;
+      const sc = s.popScale || 1;
+      drawShapeFilled(s.type, s.x, s.y, s.r * sc, s.color);
+      ctx.restore();
+      continue;
+    }
+
+    ctx.save();
+    const sc = s.scale * (s.popScale > 1 ? s.popScale : 1);
+    const wobbleX = s.matched ? 0 : Math.sin(s.wobble) * 1.5;
+    const rot = s.matched ? 0 : s.rotation;
+
+    // Selection glow ring
+    if (selected === s) {
+      ctx.save();
+      ctx.translate(s.x + wobbleX, s.y);
+      ctx.rotate(rot);
+      ctx.scale(sc, sc);
+      shapePath(s.type, s.r + 8);
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 5;
+      ctx.shadowColor = s.color;
+      ctx.shadowBlur = 20;
+      ctx.stroke();
+      // Pulsing dashed ring
+      ctx.setLineDash([8, 6]);
+      ctx.lineDashOffset = -Date.now() * 0.02; // animated
+      shapePath(s.type, s.r + 8);
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 3;
+      ctx.shadowBlur = 0;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Shadow
+    ctx.shadowColor = 'rgba(0,0,0,0.25)';
+    ctx.shadowBlur = selected === s ? 16 : 8;
+    ctx.shadowOffsetY = selected === s ? 6 : 3;
+
+    ctx.translate(s.x + wobbleX, s.y);
+    ctx.rotate(rot);
+    ctx.scale(sc, sc);
+    // Reset translate for drawing at 0,0
+    shapePath(s.type, s.r);
+    ctx.fillStyle = s.color;
+    ctx.fill();
+
+    // Highlight
+    ctx.save();
+    shapePath(s.type, s.r);
+    ctx.clip();
+    ctx.beginPath();
+    ctx.ellipse(-s.r * 0.2, -s.r * 0.3, s.r * 0.6, s.r * 0.4, -0.3, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.fill();
+    ctx.restore();
+
+    // Outline
+    shapePath(s.type, s.r);
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Crescent cutout for draggable shape
+    if (s.type === 'crescent') {
+      ctx.beginPath();
+      ctx.arc(s.r * 0.35, -s.r * 0.15, s.r * 0.72, 0, Math.PI * 2);
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = '#000';
+      ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // Label on shape
+    ctx.shadowColor = 'transparent';
+    ctx.font = `bold ${Math.max(10, s.r * 0.35)}px 'Comic Sans MS', cursive`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.fillText(s.label, 0, 0);
+
+    ctx.restore();
+  }
+
+  // Particles
+  particles.forEach(p => p.draw());
+
+  // Confetti
+  for (const c of confettiPieces) {
+    ctx.save();
+    ctx.globalAlpha = c.life;
+    ctx.translate(c.x, c.y);
+    ctx.rotate(c.rot);
+    ctx.fillStyle = c.color;
+    ctx.fillRect(-c.r / 2, -c.r / 4, c.r, c.r / 2);
+    ctx.restore();
+  }
+
+  // Celebrate message
+  if (celebrating) {
+    ctx.save();
+    const alpha = Math.min(1, celebrateTimer / 30);
+    ctx.globalAlpha = alpha;
+    ctx.textAlign = 'center';
+    ctx.font = "bold 48px 'Comic Sans MS', cursive";
+    ctx.fillStyle = '#FFD700';
+    ctx.shadowColor = 'rgba(0,0,0,0.4)';
+    ctx.shadowBlur = 10;
+    ctx.fillText(
+      ['\u{1F389} Great Job!', '\u{2B50} Amazing!', '\u{1F31F} Wonderful!', '\u{1F38A} Hooray!'][round % 4],
+      W / 2, H / 2
+    );
+    ctx.font = "24px 'Comic Sans MS', cursive";
+    ctx.fillStyle = '#fff';
+    ctx.fillText('Get ready for round ' + (round + 1) + '!', W / 2, H / 2 + 45);
+    ctx.restore();
+  }
+
+  drawHUD();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+resize();
+window.addEventListener('resize', resize);
+loop();
+</script>
+</body>
+</html>
